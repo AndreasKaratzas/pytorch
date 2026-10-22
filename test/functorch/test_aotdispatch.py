@@ -8104,9 +8104,82 @@ def forward(self, primals_1, tangents_1):
         finally:
             handle.destroy()
 
+    @parametrize("subclass_weight", [False, True])
+    @parametrize("unlift_effect_tokens", [False, True])
+    @parametrize("with_effect", [False, True])
+    def test_static_input_stamps_with_effect_tokens_in_training(
+        self, with_effect, unlift_effect_tokens, subclass_weight
+    ):
+        """The joint graph's primals start with the effect tokens, so the
+        static input indices passed to the partitioner must be offset by the
+        token count. Otherwise the is_static_input stamps shift: the parameter
+        loses its stamp and a dynamic input can gain one. A tensor-subclass
+        parameter is unwrapped into several primals, all of them static."""
+        from torch._dynamo.backends.common import aot_autograd
+        from torch._functorch.partitioners import min_cut_rematerialization_partition
+        from torch._higher_order_ops.effects import _register_effectful_op
+        from torch._library.effects import EffectType
+
+        @torch.library.custom_op(
+            "test::effectful_training_static_stamp", mutates_args=()
+        )
+        def log(x: torch.Tensor) -> None:
+            pass
+
+        @log.register_fake
+        def _(x):
+            pass
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                weight = torch.randn(3)
+                if subclass_weight:
+                    weight = TwoTensor(weight, torch.randn(3))
+                self.weight = torch.nn.Parameter(weight)
+
+            def forward(self, x):
+                if with_effect:
+                    log(x)
+                return (x * self.weight).sin().sum()
+
+        stamps = []
+
+        def partition_fn(joint_module, joint_inputs, **kwargs):
+            out = min_cut_rematerialization_partition(
+                joint_module, joint_inputs, **kwargs
+            )
+            for node in joint_module.graph.find_nodes(op="placeholder"):
+                shape = tuple(node.meta["val"].shape)
+                if "is_static_input" in node.meta and shape in [(3,), (4, 3)]:
+                    stamps.append((shape, node.meta["is_static_input"]))
+            return out
+
+        handle = _register_effectful_op(log, EffectType.ORDERED)
+        torch._dynamo.reset()
+        try:
+            with torch._functorch.config.patch(
+                unlift_effect_tokens=unlift_effect_tokens,
+                enable_autograd_cache=False,
+            ):
+                backend = aot_autograd(
+                    fw_compiler=nop, bw_compiler=nop, partition_fn=partition_fn
+                )
+                compiled = torch.compile(Model(), backend=backend, fullgraph=True)
+                compiled(torch.randn(4, 3, requires_grad=True)).backward()
+        finally:
+            handle.destroy()
+            torch._dynamo.reset()
+
+        num_weights = 2 if subclass_weight else 1
+        self.assertEqual(
+            sorted(stamps), [((3,), True)] * num_weights + [((4, 3), False)]
+        )
+
+    @parametrize("training", [False, True])
     @parametrize("unlift_effect_tokens", [False, True])
     def test_static_input_indices_after_effect_token_removal(
-        self, unlift_effect_tokens
+        self, unlift_effect_tokens, training
     ):
         from torch._dynamo.backends.common import aot_autograd
         from torch._higher_order_ops.effects import _register_effectful_op
@@ -8151,7 +8224,7 @@ def forward(self, primals_1, tangents_1):
         torch._dynamo.reset()
         try:
             with (
-                torch.no_grad(),
+                torch.set_grad_enabled(training),
                 torch._functorch.config.patch(
                     unlift_effect_tokens=unlift_effect_tokens,
                     enable_autograd_cache=False,
@@ -8159,11 +8232,13 @@ def forward(self, primals_1, tangents_1):
             ):
                 compiled = torch.compile(
                     Model(),
-                    backend=aot_autograd(fw_compiler=compiler),
+                    backend=aot_autograd(fw_compiler=compiler, bw_compiler=nop),
                     fullgraph=True,
                     dynamic=False,
                 )
-                compiled(torch.randn(7))
+                out = compiled(torch.randn(7, requires_grad=training))
+                if training:
+                    out.backward()
         finally:
             handle.destroy()
             torch._dynamo.reset()

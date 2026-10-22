@@ -532,7 +532,10 @@ class ViewAndMutationMeta:
     # raised
     deterministic: bool | None = None
 
-    # Keeps track of which input indices store parameters (which we will treat as static)
+    # Positions of the flat inputs that store parameters (which we will treat as
+    # static). While effect tokens are inputs (from graph capture until
+    # unlift_tokens, or for good if the tokens are kept), the positions count
+    # the tokens too. See Note [Side-Effectful Tokens in AOTAutograd].
     static_input_indices: list[int] = field(default_factory=list)
 
     # Input paths that held AsyncCollectiveTensors at compile time. A path is

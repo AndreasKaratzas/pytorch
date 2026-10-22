@@ -370,6 +370,10 @@ def unlift_tokens(
     #     expected_num_erased_outputs == fw_metadata.num_backward_tokens
     num_forward_tokens = len(fw_metadata.tokens)
     num_backward_tokens = fw_metadata.num_backward_tokens
+    if not all(idx >= num_forward_tokens for idx in fw_metadata.static_input_indices):
+        raise AssertionError(
+            f"Static inputs {fw_metadata.static_input_indices} overlap {num_forward_tokens} tokens"
+        )
 
     def replace_input_token_with_make_token(
         module: torch.fx.GraphModule, node: torch.fx.Node
@@ -576,6 +580,10 @@ def unlift_tokens(
     # the tokens.
     fw_metadata.tokens = {}
     fw_metadata.num_backward_tokens = 0
+    # Undo the offset handle_effect_tokens_fn applied for the token inputs.
+    fw_metadata.static_input_indices = [
+        idx - num_forward_tokens for idx in fw_metadata.static_input_indices
+    ]
 
 
 def root_module_when_exporting_non_strict(

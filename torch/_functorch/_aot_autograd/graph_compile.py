@@ -2014,11 +2014,20 @@ def _partition_joint_graph_into_fw_bw(
         ):
             node.meta["aot_runtime_epilogue_input_mutation"] = True
 
+    # fx_g's primals are the unwrapped inputs. With tensor-subclass inputs, their
+    # static positions are in inner_meta, which was built before the tokens were
+    # added. TODO: the saved-tensor hooks and, when tokens are kept, the forward
+    # compiler still get outer positions for tensor-subclass inputs.
+    static_lifetime_input_indices = (
+        fw_metadata.static_input_indices
+        if inner_meta is fw_metadata
+        else [idx + num_tokens for idx in inner_meta.static_input_indices]
+    )
     fw_module, bw_module = partition_fn(
         fx_g,
         joint_inputs,
         num_fwd_outputs=num_inner_fwd_outputs,
-        static_lifetime_input_indices=fw_metadata.static_input_indices,
+        static_lifetime_input_indices=static_lifetime_input_indices,
     )
 
     rng_states = [
