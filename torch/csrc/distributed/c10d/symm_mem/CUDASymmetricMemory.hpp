@@ -12,7 +12,9 @@
 namespace c10d::symmetric_memory {
 
 // Resource wrapper that owns a (vaddr, allocation handle) pair. Upon
-// destruction, it unmaps the vaddr and releases the allocation handle.
+// destruction, it unmaps the vaddr, frees its VA reservation and releases the
+// allocation handle. ptr must be the base of a VA range of exactly block_size
+// that the caller reserved (via map_block); the AllocationRef takes ownership.
 struct AllocationRef : public c10::intrusive_ptr_target {
   void* ptr;
   HandleType handle;
